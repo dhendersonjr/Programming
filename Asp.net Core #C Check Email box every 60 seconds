@@ -1,217 +1,168 @@
-public class EMAIL
+/*
+    Include in Startup
+    services.AddHostedService<ConsumeScopedServiceHostedService>();
+     services.AddScoped<IScopedProcessingService, ScopedProcessingService>();
+*/
+
+internal interface IScopedProcessingService
+{
+    Task DoWork(CancellationToken stoppingToken);
+    Task NightlyWork(CancellationToken stoppingToken);
+    Task WmiObjectCheker(CancellationToken stoppingToken);
+}
+
+internal class ScopedProcessingService : IScopedProcessingService
+{
+    private readonly ILogger _logger;
+
+    private EMAIL GetNewEmail;
+
+    public ScopedProcessingService(ILogger<ScopedProcessingService> logger)
+    {
+        _logger = logger;
+        this.GetNewEmail = new();
+    }
+    public async Task EmailTask(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            GetNewEmail.GetEmail();
+
+            // Wait 60 seconds before checking again.
+            await Task.Delay(60000, stoppingToken);
+        }
+    }
+
+}
+
+public class ConsumeScopedServiceHostedService : BackgroundService
+{
+    private readonly ILogger<ConsumeScopedServiceHostedService> _logger;
+
+    public ConsumeScopedServiceHostedService(IServiceProvider services,
+        ILogger<ConsumeScopedServiceHostedService> logger)
+    {
+        Services = services;
+        _logger = logger;
+
+    }
+
+    public IServiceProvider Services { get; }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
 
-        private readonly string _UserName;
-        private readonly string _Password;
+        await DoWork(stoppingToken);
+    }
 
-        public EMAIL()
+    private async Task DoWork(CancellationToken stoppingToken)
+    {
+
+        using (var scope = Services.CreateScope())
         {
-            _UserName = "ithelpdesk@riverbank.k12.ca.us";
-            _Password = "!*RUSD1944!*";
+            var scopedProcessingService =
+                scope.ServiceProvider
+                    .GetRequiredService<IScopedProcessingService>();
 
-        }
+            await scopedProcessingService.EmailTask(stoppingToken);
 
-        private DirectorySearcher BuildUserSearcher(DirectoryEntry de)
-        {
-            DirectorySearcher ds = new(de); 
-
-            
-
-            // Full Name
-            ds.PropertiesToLoad.Add("name");
-
-            // Email Address
-            ds.PropertiesToLoad.Add("mail");
-
-            // First Name
-            ds.PropertiesToLoad.Add("givenname");
-
-            // Last Name (Surname)
-            ds.PropertiesToLoad.Add("sn");
-
-            // Login Name
-            ds.PropertiesToLoad.Add("userPrincipalName");
-
-            // Distinguished Name
-            ds.PropertiesToLoad.Add("distinguishedName");
-
-            ds.PropertiesToLoad.Add("Company");
-            ds.PropertiesToLoad.Add("Department");
-            return ds;
-        }
-
-        private SearchResult SearchForUser(string userName)
-        {
-            SearchResult results;
-            DirectorySearcher ds = null;
-            DirectoryEntry de = new(GetCurrentDomainPath());
-
-            // Build User Searcher
-            ds = BuildUserSearcher(de);
-
-            ds.Filter = "(&(objectCategory=User)(objectClass=person)(samaccountname=" + userName + "*))";
-
-            results = ds.FindOne();
-
-            return (results);
-
-        }
-
-       
-        private string GetCurrentDomainPath()
-        {
-            DirectoryEntry de = new("LDAP://RootDSE");
-
-            return "LDAP://" + de.Properties["defaultNamingContext"][0].ToString();
-        }
-        public void GetEmail(RUSDSQL _RusdSql)
-        {
-
-            try
-            {
-                ExchangeService _service;
-                try
-                {
-                    
-
-                    _service = new ExchangeService
-                    {
-                        Credentials = new WebCredentials(_UserName, _Password)
-                    };
-                }
-                catch
-                {
-                    Console.WriteLine("new ExchangeService failed. Press enter to exit:");
-                    return;
-                }
-                // This is the office365 webservice URL
-                _service.Url = new Uri("https://outlook.office365.com/EWS/Exchange.asmx");
-
-                // Prepare seperate class for writing email to the database
-                try
-                {
-
-
-                    SearchFilter sf = new SearchFilter.SearchFilterCollection(LogicalOperator.And, new SearchFilter.IsEqualTo(EmailMessageSchema.IsRead, false));
-                    EmailModel Rec = new();
-                    var Emails = _service.FindItems(WellKnownFolderName.Inbox, new ItemView(100));
-                    Console.WriteLine(Emails.Count());
-                    
-                    foreach (EmailMessage email in _service.FindItems(WellKnownFolderName.Inbox, sf, new ItemView(100)))
-                    {
-
-                        email.Load(new PropertySet(BasePropertySet.FirstClassProperties, ItemSchema.TextBody));
-
-                        Rec = new EmailModel
-                        {
-                            From = email.From.Address
-                        };
-                        if (Rec.From.Split("@")[1].ToLower() != "riverbank.k12.ca.us")
-                        {
-                            Rec.Body = email.TextBody;
-                        }
-                        else
-                        {
-                            Rec.Body = email.Body;
-                        }
-                        
-                        Rec.Subject = email.Subject;
-                        email.Load(new PropertySet(BasePropertySet.FirstClassProperties, ItemSchema.Attachments));
-                        Console.WriteLine(email.Attachments.Count);
-                        EmailAttachment AttFile = new();
-                        
-                        foreach(Attachment attachment in email.Attachments){
-                            if(attachment is FileAttachment)
-                            {
-                                FileAttachment fileAttachment = attachment as FileAttachment;
-                                fileAttachment.Load();
-                                AttFile = new EmailAttachment
-                                {
-                                    FileName = fileAttachment.Name,
-                                    Data = fileAttachment.Content,
-                                    ContentType = fileAttachment.ContentType
-                                };
-                                Rec.Attacment.Add(AttFile);
-                            }
-                            
-
-                        }
-                        
-                        
-
-
-                        if (CreateTicketsFromEmail(Rec, _RusdSql))
-                        {
-                            email.Load(new PropertySet(BasePropertySet.FirstClassProperties, ItemSchema.TextBody));
-                            email.Delete(DeleteMode.HardDelete);
-                        }
-
-                    }
-
-                    
-                }
-                catch (Exception e)
-                {
-                    Console.WriteLine("An error has occured. \n:" + e.Message);
-                }
-
-
-                
-
-            }
-            catch (Exception ep)
-            {
-                Console.WriteLine(ep.Message);
-            }
-        }
-        public bool CreateTicketsFromEmail(EmailModel Records, RUSDSQL _RusdSql)
-        {
-            string Site = "";
-            Ticket Rec = new();
-            Rec.StartDate = DateTime.Now;
-            Rec.ID = new Guid();
-            if(Records.Subject == null)
-            {
-                Rec.Title = "";
-
-            }
-            else
-            {
-                Rec.Title = Records.Subject;
-            }
-           
-            Rec.Description = Records.Body;
-            Rec.Affected = Records.From;
-            try
-            {
-                Site = (SearchForUser(Records.From.Split("@")[0])).GetPropertyValue("Company");
-            }
-           
-            catch
-            {
-
-            }
-            Rec.Site = Site;
-
-            _RusdSql.Ticket.Add(Rec);
-            if (Records.Attacment.Count > 0)
-            {
-                Attachments AttRec = new();
-                for (int i = 0; i < Records.Attacment.Count; i++)
-                {
-                    AttRec = new Attachments
-                    {
-                        TicketID = Rec.ID,
-                        ContentType = Records.Attacment[i].ContentType,
-                        Data = Records.Attacment[i].Data,
-                        FileName = Records.Attacment[i].FileName
-                    };
-                    _RusdSql.Attachments.Add(AttRec);
-                }
-            }
-
-            _RusdSql.SaveChanges();
-            return true;
         }
 
     }
+
+    public override async Task StopAsync(CancellationToken stoppingToken)
+    {
+        await base.StopAsync(stoppingToken);
+    }
+}
+
+public class EMAIL
+{
+
+    private readonly string _UserName;
+    private readonly string _Password;
+
+    public EMAIL()
+    {
+        _UserName = "userName";
+        _Password = "Password";
+
+    }
+
+    public void GetEmail(RUSDSQL _RusdSql)
+    {
+        try
+        {
+            ExchangeService _service;
+            try
+            {
+                _service = new ExchangeService
+                {
+                    Credentials = new WebCredentials(_UserName, _Password)
+                };
+            }
+            catch
+            {
+                Console.WriteLine("new ExchangeService failed. Press enter to exit:");
+                return;
+            }
+            // This is the office365 webservice URL
+            _service.Url = new Uri("https://outlook.office365.com/EWS/Exchange.asmx");
+
+            // Prepare seperate class for writing email to the database
+            try
+            {
+                SearchFilter sf = new SearchFilter.SearchFilterCollection(LogicalOperator.And, new SearchFilter.IsEqualTo(EmailMessageSchema.IsRead, false));
+                EmailModel Rec = new();
+                //ItemView is the first 100 unread messages
+                var Emails = _service.FindItems(WellKnownFolderName.Inbox, new ItemView(100));
+                Console.WriteLine(Emails.Count());
+
+                foreach (EmailMessage email in _service.FindItems(WellKnownFolderName.Inbox, sf, new ItemView(100)))
+                {
+
+                    email.Load(new PropertySet(BasePropertySet.FirstClassProperties, ItemSchema.TextBody));
+
+                    Rec = new EmailModel
+                    {
+                        From = email.From.Address
+                    };
+
+                    Rec.Body = email.Body;
+                    Rec.Subject = email.Subject;
+                    email.Load(new PropertySet(BasePropertySet.FirstClassProperties, ItemSchema.Attachments));
+                    Console.WriteLine(email.Attachments.Count);
+
+                    EmailAttachment AttFile = new();
+
+                    foreach (Attachment attachment in email.Attachments)
+                    {
+                        if (attachment is FileAttachment)
+                        {
+                            FileAttachment fileAttachment = attachment as FileAttachment;
+                            fileAttachment.Load();
+                            AttFile = new EmailAttachment
+                            {
+                                FileName = fileAttachment.Name,
+                                Data = fileAttachment.Content,
+                                ContentType = fileAttachment.ContentType
+                            };
+                            Rec.Attacment.Add(AttFile);
+                        }
+                    }
+
+                    email.Delete(DeleteMode.HardDelete);
+                    //Do someting with Rec here... 
+                }
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine("An error has occured. \n:" + e.Message);
+            }
+        }
+        catch (Exception ep)
+        {
+            Console.WriteLine(ep.Message);
+        }
+    }
+}
