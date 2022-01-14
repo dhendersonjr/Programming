@@ -1,0 +1,100 @@
+
+
+public class ConsumeNightlyService : BackgroundService
+{
+    public ConsumeNightlyService(IServiceProvider services)
+    {
+        Services = services;
+    }
+
+    public IServiceProvider Services { get; }
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        await DoWork(stoppingToken);
+    }
+
+    private async Task DoWork(CancellationToken stoppingToken)
+    {
+        using (var scope = Services.CreateScope())
+        {
+            var scopedProcessingService =
+                scope.ServiceProvider
+                    .GetRequiredService<IScopedProcessingService>();
+
+            await scopedProcessingService.NightlyWork(stoppingToken);
+
+        }
+    }
+
+    public override async Task StopAsync(CancellationToken stoppingToken)
+    {
+        await base.StopAsync(stoppingToken);
+    }
+}
+
+internal interface IScopedProcessingService
+{
+    Task NightlyWork(CancellationToken stoppingToken);
+}
+
+internal class ScopedProcessingService : IScopedProcessingService
+{
+    private readonly ILogger _logger;
+
+    public ScopedProcessingService(ILogger<ScopedProcessingService> logger)
+    {
+        _logger = logger;
+    }
+    public async Task NightlyWork(CancellationToken stoppingToken)
+    {
+        DateTime Daily = DateTime.Now;
+        NightlyTask Nightly = new();
+
+        Daily = Daily.AddHours(23 - Daily.Hour);
+        Daily = Daily.AddMinutes(0 - Daily.Minute);
+        Daily = Daily.AddSeconds(0 - Daily.Second);
+        Daily = Daily.AddMilliseconds(0 - Daily.Millisecond);
+
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            var Delay = Daily.Subtract(DateTime.Now);
+            if (Delay.Ticks < 0)
+            {
+                Daily = Daily.AddDays(1);
+            }
+            else
+            {
+                await Task.Delay(Delay, stoppingToken);
+                await Nightly.NightlyProcess();
+                Daily = Daily.AddDays(1);
+            }
+        }
+    }
+
+
+}
+
+public class NightlyTask
+{
+    public async Task NightlyProcess()
+    {
+        //Triggered at 11pm nightly.
+
+        DateTime RightNow = DateTime.Now;
+        if (RightNow.DayOfWeek == DayOfWeek.Tuesday || RightNow.DayOfWeek == DayOfWeek.Thursday)
+        {
+            // Do work only if it is Tuesday or Thursday example      
+            // Then wait 1 second before next step.
+            await Task.Delay(1000);
+        }
+
+
+        // Do work every Night at 11pm here.. 
+    }
+
+}
+/*
+    // Add this to startup 
+    services.AddHostedService<ConsumeNightlyService>();
+    services.AddScoped<IScopedProcessingService, ScopedProcessingService>();
+*/
