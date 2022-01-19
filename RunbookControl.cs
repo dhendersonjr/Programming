@@ -1,0 +1,169 @@
+public class RunbookController : Controller
+{
+    //http://Server:81/Orchestrator2012/Orchestrator.svc/Runbooks 
+    // Returns all the runbooks on the server. 
+
+    //Server:81/Orchestrator2012/Orchestrator.svc/Runbooks(guid'db0f482c-ad93-4e4d-a8e3-02c5c7a5ec08')/Parameters 
+    // Returns the Parameters 
+    private readonly RUSDSQL _RusdSql;
+    private readonly ILogger<RunbookController> logger;
+    private readonly NetworkCredential networkCredential;
+    public string SubmitRequest(XmlDocument Record)
+    {
+        var request = (HttpWebRequest)WebRequest.Create("http://rusd-runbook:81/Orchestrator2012/Orchestrator.svc/Jobs/");
+        var data = Encoding.UTF8.GetBytes(Record.InnerXml);
+        request.Method = "POST";
+        request.ContentType = "application/atom+xml";
+        request.ContentLength = data.Length;
+        request.Credentials = networkCredential;
+        var newStream = request.GetRequestStream();
+        newStream.Write(data, 0, data.Length);
+        newStream.Close();
+        WebResponse response = request.GetResponse();
+        Record.Load(response.GetResponseStream());
+        var JobGuid = Record.GetElementsByTagName("d:Id")[0].InnerXml;
+        var UrL = "http://rusd-runbook:81/Orchestrator2012/Orchestrator.svc/Jobs(guid'" + JobGuid + "')";
+        response.Close();
+        return UrL;
+    }
+
+    public RunbookController( ILogger<RunbookController> logger)
+    {
+        String UserId = "UserName";
+        String UserPassword = "Password";
+        String DomainName = "domainName";
+        networkCredential = new NetworkCredential(UserId, UserPassword, DomainName);       
+        this.logger = logger;
+    }
+    public StringBuilder BuildXMl(XMLRunbook rec)
+    {
+        StringBuilder Xml = new StringBuilder();
+        Xml.AppendLine("<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\"?>");
+        Xml.AppendLine("<entry xmlns:d=\"http://schemas.microsoft.com/ado/2007/08/dataservices\" xmlns:m=\"http://schemas.microsoft.com/ado/2007/08/dataservices/metadata\" xmlns=\"http://www.w3.org/2005/Atom\">");
+        Xml.AppendLine("<content type=\"application/xml\">");
+        Xml.AppendLine("<m:properties>");
+        Xml.AppendLine("<d:RunbookId type =\"Edm.Guid\">{" + rec.RunbookGuid + "}</d:RunbookId>");
+        Xml.AppendLine("<d:Parameters> ");
+        if (rec.Properties.Count > 0)
+        {
+
+            Xml.AppendLine(@"&lt;Data&gt;");
+            foreach (var Prop in rec.Properties)
+            {
+                Xml.AppendLine(@" &lt;Parameter&gt;
+                                                &lt;ID&gt;{" + Prop.Id + @"}&lt;/ID&gt;
+                                                &lt;Value&gt;" + Prop.Key + @"&lt;/Value&gt;
+                                            &lt;/Parameter&gt;");
+            }
+            Xml.AppendLine("&lt;/Data&gt;");
+            Xml.AppendLine("</d:Parameters>");
+            Xml.AppendLine("</m:properties>");
+            Xml.AppendLine("</content>");
+            Xml.AppendLine("</entry>");
+        }
+
+        return Xml;
+    }
+    // Call Reset Student Password Runbook. 
+    
+    public JsonResult ResetStuPassword(int PermID)
+    {
+        // Email  = 97204b4b-2117-4d00-8b40-33f726d90351
+        // StuId = 645440e4-9bc1-48fb-a6f7-29aab5e5792f
+        // RunbookID = 3d0ac187-fac8-4622-8e62-004ffd26caa8
+
+        var Email = User.Identity.Name;
+        XMLRunbook XmlPost = new();
+        XmlPost.Properties.Add(new XmlRunbookKeyValue
+        {
+            Id = Guid.Parse("97204b4b-2117-4d00-8b40-33f726d90351"),
+            Key = Email
+        });
+        XmlPost.Properties.Add(new XmlRunbookKeyValue
+        {
+            Id = Guid.Parse("645440e4-9bc1-48fb-a6f7-29aab5e5792f"),
+            Key = PermID.ToString()
+        });
+        XmlPost.RunbookGuid = Guid.Parse("3d0ac187-fac8-4622-8e62-004ffd26caa8");
+
+        var PostBody = BuildXMl(XmlPost);
+
+        XmlDocument xmlDoc = new XmlDocument();
+
+        try
+        {
+            xmlDoc.LoadXml(PostBody.ToString());
+        }
+        catch (Exception e)
+        {
+            logger.LogError(e.ToString());
+        }
+
+        var UrL = SubmitRequest(xmlDoc);
+        bool Status = false;
+        while (!Status)
+        {
+            HttpWebRequest httpWebRequest = (HttpWebRequest)WebRequest.Create(UrL);
+            httpWebRequest.Credentials = networkCredential;
+            httpWebRequest.MaximumAutomaticRedirections = 3;
+            httpWebRequest.Timeout = 5000;
+            WebResponse httpWebResponse = (HttpWebResponse)httpWebRequest.GetResponse();
+
+            xmlDoc.Load(httpWebResponse.GetResponseStream());
+
+            if (xmlDoc.GetElementsByTagName("d:Status")[0].InnerXml == "Completed")
+            {
+
+                xmlDoc = XmlRunbookFetch(UrL + "/Instances");
+
+                xmlDoc = XmlRunbookFetch(xmlDoc.GetElementsByTagName("entry")[0].ChildNodes[0].InnerText + "/Parameters");
+                var SubDoc = xmlDoc.GetElementsByTagName("m:properties");
+                string Body = "";
+                for (var node = 0; node < SubDoc.Count; node++)
+                {
+                    if (SubDoc[node].ChildNodes[3].InnerXml == "ResultEmailBody")
+                    {
+                        Body = SubDoc[node].ChildNodes[4].InnerXml;
+                    }
+                }
+               // Email body returned from Runbook Server
+               // Send email with body to user. 
+                Status = true;
+            }
+            else
+            {
+                Status = false;
+            }
+        }
+        
+        return Json("Reset Password Completed Please Check your Email for the new password.");
+    }
+    public XmlDocument XmlRunbookFetch(string Url)
+    {
+        XmlDocument xmlDoc = new XmlDocument();
+        HttpWebRequest httpWebRequest = (HttpWebRequest)WebRequest.Create(Url);
+        httpWebRequest.Credentials = networkCredential;
+        httpWebRequest.MaximumAutomaticRedirections = 3;
+        httpWebRequest.Timeout = 5000;
+        WebResponse httpWebResponse = (HttpWebResponse)httpWebRequest.GetResponse();
+        xmlDoc.Load(httpWebResponse.GetResponseStream());
+        return xmlDoc;
+
+    }
+}
+public class XmlRunbookKeyValue
+{
+    public Guid Id { get; set; }
+    public string Key { get; set; }
+}
+public class XMLRunbook
+{
+    public List<XmlRunbookKeyValue> Properties { get; set; }
+    public Guid RunbookGuid { get; set; }
+    public XMLRunbook()
+    {
+        this.Properties = new List<XmlRunbookKeyValue>();
+    }
+}
+
+
