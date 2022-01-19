@@ -1,3 +1,6 @@
+// Allows you to activate Runbooks on your System Center Orchestrator and retrive data.. 
+// Example shows activating reset password Runbook and returning an email body to the user. 
+
 public class RunbookController : Controller
 {
     //http://Server:81/Orchestrator2012/Orchestrator.svc/Runbooks 
